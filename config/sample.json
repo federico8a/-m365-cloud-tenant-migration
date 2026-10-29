@@ -1,0 +1,16 @@
+{
+  "sourceTenantId": "00000000-0000-4000-8000-000000000001",
+  "targetTenantId": "00000000-0000-4000-8000-000000000002",
+  "targetStagingDomain": "target.onmicrosoft.com",
+  "targetDeliveryDomain": "target.onmicrosoft.com",
+  "migrationEndpointName": "crossTenantSourceEndpoint",
+  "cutoverDomain": "example.com",
+  "migrationWorkloads": ["Exchange", "ODSP", "Teams", "Meeting"],
+  "batchName": "pilot-001",
+  "maxBatchUsers": 100,
+  "requiredApprovals": ["CustomerOwner", "MigrationLead", "Security", "Compliance", "DNSOwner"],
+  "sharePointSharedDataSkuAvailable": false,
+  "sourceAgreementType": "CSP",
+  "estimatedSharePointGB": 0,
+  "currency": "CAD"
+}

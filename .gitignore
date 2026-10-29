@@ -1,0 +1,11 @@
+output/
+config/local.json
+.env
+*.secret.json
+*token*
+*.pfx
+*.pem
+*.key
+__pycache__/
+.pytest_cache/
+.DS_Store
