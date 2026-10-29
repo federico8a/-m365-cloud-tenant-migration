@@ -26,46 +26,94 @@ Tenant **A** (source) -> Tenant **B** (target), cloud-only users. Entra cloud ID
 - User identities must be **cloud-only**; accounts with `onPremisesSyncEnabled=true` block this project. Hybrid source identities are intentionally another project.
 - Keep output in a protected folder: inventories contain employee names, emails, app configuration, security policy metadata and tenant IDs. `.gitignore` excludes `output/` and generated sensitive files.
 
-## Terminal quick start
+## Single-entry PowerShell workflow (recommended)
+
+**All operations run through `main.ps1` in the repository root.** It loads
+`modules/Migration.Workflow.psm1`, which validates configuration and dispatches
+to the existing `scripts/*.ps1` as dedicated helper commands. Each PowerShell
+helper executes in its **own process** to avoid Graph/Exchange/CTIM token crossover.
+The helper scripts remain standalone for troubleshooting, but operators do not
+need to call them directly.
 
 ```powershell
-# 1. Install only what you need. Never check credentials/secrets into Git.
+# One-time prerequisite installation (interactive, CurrentUser; install only needed modules).
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 Install-Module Microsoft.Graph.Beta.Migrations -Scope CurrentUser
 Install-Module ExchangeOnlineManagement -Scope CurrentUser
 Install-Module MicrosoftTeams -Scope CurrentUser
+# Install SPO and CTIM modules following Microsoft's supported OS/runtime guidance.
 
-# 2. Duplicate and edit configuration; use real GUIDs for source and target.
-Copy-Item config/sample.json config/local.json
+Copy-Item ./config/sample.json ./config/local.json
+# Edit sourceTenantId, targetTenantId, staging domain, SharePoint admin URLs and DNS.
 
-# 3. Source tenant: read-only Graph discovery. Sign-in is interactive.
-./scripts/Export-GraphInventory.ps1 -TenantId '<SOURCE-GUID>' -OutputDirectory './output/source'
+# Interactive stage menu (all stages accessible from the same console entry point):
+pwsh ./main.ps1
 
-# 4. Target tenant: read-only discovery; NEVER auto-license/mailbox users.
-./scripts/Export-GraphInventory.ps1 -TenantId '<TARGET-GUID>' -OutputDirectory './output/target'
-
-# 5. Optional service inventory (run per tenant; use correct admin URLs).
-./scripts/Export-ServiceInventory.ps1 -TenantId '<SOURCE-GUID>' -SPOAdminUrl 'https://source-admin.sharepoint.com' -OutputDirectory './output/source'
-
-# 6. Generate map for HUMAN REVIEW. Ensure unique verified target identities.
-./scripts/New-IdentityMap.ps1 -SourceUsers './output/source/users.json' -SourceMailboxes './output/source/mailboxes.json' -TargetStagingDomain 'target.onmicrosoft.com' -OutputPath './output/identity-map.csv'
-
-# 7. Optional: preview creating cloud-only target MailUsers with source routing.
-./scripts/New-CloudTargetUsers.ps1 -TargetTenantId '<TARGET-GUID>' -TargetOrganization 'target.onmicrosoft.com' -MappingCsv './output/identity-map.csv' -TargetStagingDomain 'target.onmicrosoft.com' -OutputCsv './output/identity-map-target.csv'
-#    See docs/RUNBOOK.md and scripts/Invoke-Ctim.ps1 for staged, approved execution.
-
-# 8. Offline assessment; EXPLICIT FAIL on synced users, conflicts, missing targets.
-python ./tools/assess.py --source ./output/source --target ./output/target --mapping ./output/identity-map.csv --output ./output/readiness.json
-
-# 9. After following prerequisites in docs/RUNBOOK.md and obtaining approvals,
-#    prepare a DRY-RUN batch payload (NO API mutation).
-./scripts/Invoke-NativeOrchestrator.ps1 -Action Preview -ConfigPath './config/local.json' -MappingCsv './output/identity-map.csv' -CutoverUtc '2026-12-15T02:00:00Z'
-
-# 10. Create/validate/migrate batch only under approved change control.
-#    See docs/RUNBOOK.md; not executed without explicit confirmation.
+# Automation-friendly CLI, also using ONLY main.ps1:
+pwsh ./main.ps1 -Stage Plan
+pwsh ./main.ps1 -Stage Prerequisites
+pwsh ./main.ps1 -Stage AllReadOnly -IncludeServices
+pwsh ./main.ps1 -Stage InventorySource
+pwsh ./main.ps1 -Stage IdentityMap
+pwsh ./main.ps1 -Stage Assess
+pwsh ./main.ps1 -Stage DnsAudit
+pwsh ./main.ps1 -Stage TargetUsers               # DRY RUN; does not create accounts
+pwsh ./main.ps1 -Stage MailboxReadiness
+pwsh ./main.ps1 -Stage MigrationPreview -CutoverUtc '2026-12-15T02:00:00Z'
 ```
 
-**Critically important sequence:** Create target MailUsers -> configure target/source tenant relationship + migration endpoint -> complete Microsoft's cross-tenant identity mapping (stamps Exchange GUID) -> check absence of destination mailbox and OneDrive -> assign appropriate destination workloads & migration SKU -> create migration batch -> validate -> schedule and execute cutover. Source domain/DNS is NOT switched when you start pre-migration discovery. See `docs/DNS-CUTOVER.md`.
+`AllReadOnly` runs Graph inventory for **both** tenants, optionally Exchange,
+Teams and SharePoint inventory in both with `-IncludeServices`, then builds the
+initial identity map, assesses and checks DNS. It never mutates either tenant.
+Service discovery requires applicable modules and authenticates independently;
+if SharePoint is in scope, provide source/target admin URLs in `config/local.json`
+or use `-SourceSPOAdminUrl` / `-TargetSPOAdminUrl`. To intentionally skip that
+one workload, supply `-SkipSharePoint`; omissions are not a completed inventory.
+
+### Approved migration stages from main.ps1
+
+The interactive menu asks for **exact** approval phrases; for noninteractive jobs,
+pass `-Execute` and the required phrase. No stage creates users, writes CTIM,
+or initiates migration simply by being selected.
+
+```powershell
+# Approve the reviewed output/identity-map.csv first (approved=true on each row).
+# Target users are created UNLICENSED, with sign-in disabled.
+pwsh ./main.ps1 -Stage TargetUsers -Execute -ApprovalPhrase 'CREATE-MAILUSERS:<TARGET-TENANT-GUID>'
+
+# Microsoft CTIM — each phase isolates its tenant session.
+# SourceCopy requires -TenantRole Source and -SourceScopeSecurityGroupId.
+pwsh ./main.ps1 -Stage Ctim -CtimPhase SourceCopy -TenantRole Source -SourceScopeSecurityGroupId '<SOURCE-SCOPE-SECURITY-GROUP-GUID>'
+# For execution add -Execute -ApprovalPhrase 'CTIM:<SOURCE-TENANT-GUID>:SourceCopy'
+# Target phases: TargetAccept (with -RequestId), TargetMap, TargetWrite, TargetReport.
+
+# After CTIM, target MailUser and OneDrive absence verification, licensing,
+# customer approvals and workload-specific manual gates:
+pwsh ./main.ps1 -Stage MigrationCreate -CutoverUtc '2026-12-15T02:00:00Z' -Execute -ApprovalPhrase 'APPROVED:<TARGET-TENANT-GUID>'
+pwsh ./main.ps1 -Stage MigrationValidate -JobId '<JOB-ID>' -Execute -ApprovalPhrase 'APPROVED:<TARGET-TENANT-GUID>'
+pwsh ./main.ps1 -Stage MigrationStatus -JobId '<JOB-ID>'
+pwsh ./main.ps1 -Stage MigrationStart -JobId '<JOB-ID>' -Execute -ApprovalPhrase 'APPROVED:<TARGET-TENANT-GUID>'
+```
+
+All examples above are one-line PowerShell commands; copy each full line into the terminal.
+The dispatcher refuses to overwrite an approved or target-mapped identity CSV during rediscovery.
+
+**Important:** `main.ps1` is a **single interface, not a universal one-click
+migration**. Unsupported native workloads (Teams channels, SharePoint in many
+CSP tenants, Intune device enrollment, enterprise-app recreation, etc.) require
+manual/vendor-specific runbooks and signoffs. No false `success` reporting.
+
+### Workflow directory
+
+```text
+main.ps1                         # interactive menu + CLI; only operator entry
+modules/Migration.Workflow.psm1  # config validation, ordered dispatch, guards
+scripts/*.ps1                    # independent Graph/EXO/CTIM/Teams/SPO helpers
+tools/*.py                       # offline readiness and cost analysis
+config/local.json                # private tenant settings (gitignored)
+output/                          # private inventory and reports (gitignored)
+```
+
 
 ## Documentation
 
@@ -106,4 +154,4 @@ The result deliberately **does not** invent a CAD price for CTUDM or native Shar
 - `scripts/New-CloudTargetUsers.ps1` uses Microsoft's supported **Exchange Online New-MailUser** method, not plain Graph user creation, so CTIM can stamp the required Exchange attributes. It creates **unlicensed MailUsers with disabled sign-in** and no retained passwords. Manual user onboarding (password reset/TAP) still required at cutover.
 - `scripts/Invoke-Ctim.ps1` provides step-by-step staged native CTIM commands with separate source and target identities; follow official tenant-relationship and scope-group preparation first. CTIM is **not replaced** by the CSV proposal.
 - `scripts/Test-TargetMailboxReadiness.ps1` reports missing MailUsers and preexisting destination mailboxes; this is **Exchange-only** and does not prove OneDrive readiness.
-- `scripts/Invoke-M365Migration.ps1` offers a single terminal entry point for discovery, identity map generation, assessment, DNS audit and orchestrator preview; the multi-step approved migrations must still follow the customer change plan and module-specific commands.
+- `main.ps1` is the sole recommended operator entry point: interactive menu or `-Stage`, calling workflow modules and isolated helper scripts; approval gates and the customer change plan remain mandatory.

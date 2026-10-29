@@ -34,6 +34,7 @@ foreach($r in $rows){
  if(-not $ids.Add($r.targetUPN)){throw 'Duplicate target UPN.'}
 }
 if(-not $Execute){Write-Host "PREVIEW: $($rows.Count) cloud-only UNLICENSED MailUsers would be created in $TargetTenantId; sign-in to be disabled. NO writes.";return}
+if(@($rows|Where-Object {$_.approved -cne 'true'}).Count -gt 0){throw 'All target mappings require approved=true before creating any MailUsers.'}
 if($ApprovalPhrase -cne "CREATE-MAILUSERS:$TargetTenantId"){throw 'BLOCKED: explicit approval phrase required.'}
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
@@ -48,6 +49,7 @@ function New-EphemeralPassword {
  $chars=for($i=0;$i -lt 34;$i++){$alphabet[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($alphabet.Length)]}
  ConvertTo-SecureString ('aA7!'+(-join $chars)) -AsPlainText -Force
 }
+ $partialFailure=$null
 try {
  foreach($r in $rows){
   try {
@@ -71,7 +73,8 @@ try {
    $r.notes='MailUser created, unlicensed, sign-in disabled, ephemeral password not saved; run CTIM before licensing'
    Write-Host "Created unlicensed MailUser, sign-in disabled: $upn"
   } catch {
-   Write-Warning "STOPPED at $($r.targetUPN): $_. A partial object may exist; inspect both tenants before any re-run."
+   $partialFailure = "STOPPED at $($r.targetUPN): $($_.Exception.Message). A partial object may exist; inspect both tenants before any re-run."
+   Write-Warning $partialFailure
    break
   }
  }
@@ -80,3 +83,5 @@ $parent=Split-Path -Parent $OutputCsv
 if($parent){New-Item -ItemType Directory -Force -Path $parent|Out-Null}
 $rows|Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding utf8
 Write-Warning "Private mapping output: $OutputCsv. Review every object manually; no credentials written. Mapping approval and CTIM still required."
+
+if($partialFailure){throw $partialFailure}

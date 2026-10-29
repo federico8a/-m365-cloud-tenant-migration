@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($file in Get-ChildItem -Path scripts -Filter '*.ps1' -Recurse) {
+          foreach ($file in @(Get-Item main.ps1) + @(Get-ChildItem -Path scripts -Filter '*.ps1' -Recurse) + @(Get-ChildItem -Path modules -Filter '*.psm1' -Recurse)) {
             $tokens = $null; $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count -gt 0) {
@@ -29,3 +29,13 @@ jobs:
             }
           }
           if ($failed) { throw 'PowerShell parsing failed.' }
+
+  powershell-offline-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute main.ps1 plan without tenant access
+        shell: pwsh
+        run: |
+          ./main.ps1 -Stage Plan -ConfigPath config/sample.json
+          ./main.ps1 -Stage Prerequisites -ConfigPath config/sample.json

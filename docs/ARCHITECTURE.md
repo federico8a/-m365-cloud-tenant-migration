@@ -52,3 +52,35 @@ flowchart TD
 4. Do not store plaintext/hashed source passwords: users reset or receive controlled temporary access after cutover.
 5. Use Microsoft's CTIM module for GUID/X500 stamping rather than a hand-written Graph PATCH that risks unsupported Exchange attributes.
 6. Separate read-only inventory, pilot/validation, production execution, DNS and irreversible customer actions. No automated 'run everything' command can safely perform these without approvals.
+
+
+## Central operator entry point (October 2026 refactor)
+
+```text
+Operator (pwsh ./main.ps1  OR  ./main.ps1 -Stage <name>)
+          |
+          v
+modules/Migration.Workflow.psm1
+  |-- verify config + source != target
+  |-- resolve paths relative to repo root
+  |-- choose exactly one stage / guided menu
+  |-- invoke helper in fresh pwsh process per stage
+  |-- reject nonzero helper exit; check Graph manifests
+  |-- never skip approval gates for tenant mutations
+          |
+          +--> scripts/Export-GraphInventory.ps1        [read only]
+          +--> scripts/Export-ServiceInventory.ps1      [read only]
+          +--> scripts/New-IdentityMap.ps1               [local CSV]
+          +--> tools/assess.py                          [local JSON]
+          +--> scripts/Test-DnsReadiness.ps1             [read only]
+          +--> scripts/New-CloudTargetUsers.ps1          [approved write]
+          +--> scripts/Invoke-Ctim.ps1                   [approved write/phase]
+          +--> scripts/Test-TargetMailboxReadiness.ps1   [read only]
+          +--> scripts/Invoke-NativeOrchestrator.ps1     [preview + approved write]
+```
+
+**Do not combine tenant admin sessions in one long-lived PowerShell process**;
+CTIM in particular requires fresh authentication context. This modular dispatcher
+starts new PowerShell child processes for every script. The `AllReadOnly` chain
+cannot perform writes and stops on failed Graph collections. Non-read-only
+migration phases are deliberately independent with customer approval checks.

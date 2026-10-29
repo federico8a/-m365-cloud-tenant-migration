@@ -52,3 +52,16 @@
 - Separate service owner approvals for licensing purchase, mailbox/OneDrive move, domain release, device wipes, holds and data deletion.
 - Do not automatically copy production JSON directly into POST/PUT calls: values include immutable IDs, generated resources, secrets/certificates and tenant-specific references.
 - Stage synthetic test data, review sample migration batches, verify Pester/unit tests and dry runs, maintain exception and retry evidence.
+
+
+## Unified terminal operation
+
+- Operators must start from `main.ps1` (interactive or `-Stage`). Do not operate
+  isolated helper scripts in production runbooks, except break-glass diagnosis.
+- `main.ps1` imports `modules/Migration.Workflow.psm1` and dispatches helpers
+  in isolated `pwsh` sessions to avoid wrong-tenant token reuse.
+- Stage `AllReadOnly` may chain discovery, mapping, offline assessment and DNS
+  read-only checks; live writes require separately approved stages.
+- Config is in gitignored `config/local.json`; outputs under gitignored `output/`.
+- No automated DNS zone changes, device re-enrollment or unsupported Teams/
+  SharePoint migrations are implied by a successful orchestrator job.

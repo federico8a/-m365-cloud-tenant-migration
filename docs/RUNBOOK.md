@@ -13,11 +13,9 @@
 ## Phase 1 — Inventory and costed architecture (T-3 weeks)
 
 ```powershell
-# Local interactive admin authentication: run once per tenant, never concatenate data from two tenants without labels.
-./scripts/Export-GraphInventory.ps1 -TenantId '<SOURCE-TENANT-GUID>' -OutputDirectory './output/source'
-./scripts/Export-GraphInventory.ps1 -TenantId '<TARGET-TENANT-GUID>' -OutputDirectory './output/target'
-./scripts/Export-ServiceInventory.ps1 -TenantId '<SOURCE-TENANT-GUID>' -SPOAdminUrl 'https://SOURCE-admin.sharepoint.com' -OutputDirectory './output/source'
-./scripts/Test-DnsReadiness.ps1 -Domain 'example.com' -OutputPath './output/dns-before.json'
+# Single operator entry point. Configure config/local.json first.
+./main.ps1 -Stage AllReadOnly -IncludeServices
+# Or select individual read-only stages through ./main.ps1 -Stage <stage>.
 ```
 
 - Run inventory under delegated least privilege. Review `collection-errors.json` for permission/scoping failures. Treat 403 and missing data as incomplete, not absent.
@@ -32,11 +30,11 @@
 3. Generate a candidate mapping and verify UPN collisions, aliases and IDs:
 
 ```powershell
-./scripts/New-IdentityMap.ps1 -SourceUsers './output/source/users.json' -SourceMailboxes './output/source/mailboxes.json' -TargetStagingDomain 'TARGET.onmicrosoft.com' -OutputPath './output/identity-map.csv'
+./main.ps1 -Stage IdentityMap
 ```
 
-4. Have customer approve source/target mapping and provision **unlicensed, disabled** destination cloud identities using `New-CloudTargetUsers.ps1` (if creating target users is appropriate). New Entra object IDs are unavoidable. New passwords/keys/MFA registrations cannot be copied from A; deliver onboarding through approved authentication recovery/TAP flows.
-5. **Native mailbox/OneDrive migration ordering is critical:** target users must have NO mailbox, NO OneDrive site. Create correct MailUser routing and migration endpoint/organization relationships/scope security group according to Microsoft. Run Microsoft's **CrossTenantIdentityMapping (CTIM)** supported module in both tenants **before adding any Exchange-producing workload license**. CTIM stamps source ExchangeGUID/ArchiveGUID/x500 etc. Validate via Exchange Online PowerShell. The local identity-map.csv is an *approval manifest*, **not a substitute for CTIM**.
+4. Have customer approve source/target mapping and provision **unlicensed, disabled** destination cloud identities using `./main.ps1 -Stage TargetUsers` (dispatches to `New-CloudTargetUsers.ps1`) (if creating target users is appropriate). New Entra object IDs are unavoidable. New passwords/keys/MFA registrations cannot be copied from A; deliver onboarding through approved authentication recovery/TAP flows.
+5. **Native mailbox/OneDrive migration ordering is critical:** target users must have NO mailbox, NO OneDrive site. Create correct MailUser routing and migration endpoint/organization relationships/scope security group according to Microsoft. Run `./main.ps1 -Stage Ctim -CtimPhase ...` (Microsoft's **CrossTenantIdentityMapping (CTIM)** supported module) in both tenants **before adding any Exchange-producing workload license**. CTIM stamps source ExchangeGUID/ArchiveGUID/x500 etc. Validate via Exchange Online PowerShell. The local identity-map.csv is an *approval manifest*, **not a substitute for CTIM**.
 6. Disable target OneDrive creation before assigning workload licenses. Confirm source/target Teams and Exchange service licenses and per-user CTUDM. Licensing an unprepared account can provision an incompatible target mailbox or OneDrive, causing native migration to fail.
 7. Source-side legal holds/retention conflicts must go through counsel; do **not** remove a hold merely to pass migration validation. Document exceptional dispositions.
 8. Activate temporary access, target policies and passwords **only when user cutover plan requires it**; review app registrations, enterprise app SSO callbacks, CA policy scope and SCIM dependencies.
@@ -44,8 +42,8 @@
 ## Phase 3 — Pilot and prevalidation (T-10 days)
 
 - Pilot 3–5 fictitious/noncritical users across normal mailbox, archive, sharing, one complex Teams chat, OneDrive, a group-connected SharePoint site and a managed device; expand pilots after success.
-- Run `python ./tools/assess.py ...` to check mapping and inventory; resolve *all* blockers. Its `HUMAN_GATES_REQUIRED` status means a human must complete additional checks, **not** `GO`.
-- Native Graph Migration Orchestrator job (Tenant B): `Preview` only, inspect JSON, obtain change approvals. `Create` triggers validation, `Validate` retries on `ValidateFailed`, `Migrate` submits cutover/processing. Sample commands in README. Workloads `Exchange`, `ODSP`, `Teams` and `Meeting` only; it does **not** move Teams channel workspaces or SharePoint sites.
+- Run `./main.ps1 -Stage Assess` to check mapping and inventory; resolve *all* blockers. Its `HUMAN_GATES_REQUIRED` status means a human must complete additional checks, **not** `GO`.
+- Native Graph Migration Orchestrator job (Tenant B): `./main.ps1 -Stage MigrationPreview ...` only, inspect JSON, obtain change approvals. `Create` triggers validation, `Validate` retries on `ValidateFailed`, `Migrate` submits cutover/processing. Sample commands in README. Workloads `Exchange`, `ODSP`, `Teams` and `Meeting` only; it does **not** move Teams channel workspaces or SharePoint sites.
 - Microsoft recommends staging jobs roughly **two weeks** ahead of planned complete-after date to allow Exchange pre-sync. The complete-after time is the *earliest permitted* cutover, **not** a promise of exact completion.
 - Check validation at **batch and per-user workload level**; prerequisite validation expires after 7 days.
 - Microsoft Teams successful user status can still include some skipped messages; inspect message and thread counts, not status alone.
@@ -75,3 +73,17 @@
 - Cutover and hypercare communications sent, risk register closed or accepted, financial closeout and data-retention approval signed.
 
 See [SOURCES.md](SOURCES.md) for authoritative Microsoft documentation.
+
+## Central entry point and helper isolation
+
+Use **`./main.ps1` exclusively** for operational workflows. It imports
+`modules/Migration.Workflow.psm1`, which invokes the matching purpose-built
+script (`scripts/Export-GraphInventory.ps1`, `scripts/Invoke-Ctim.ps1`,
+`scripts/Invoke-NativeOrchestrator.ps1`, etc.) in a **fresh PowerShell process**.
+This prevents accidentally reusing Graph tokens from the wrong tenant, and is
+important for CTIM authentication. See the README for all `-Stage` values.
+
+`AllReadOnly` is the maximum safe automatic chain. Every mutating stage must
+be executed individually with customer change approval; cross-tenant mail,
+files, Teams workspaces, devices, SSO, SharePoint and DNS cannot all be moved
+with one supported API. The menu NEVER performs hidden writes.
